@@ -46,10 +46,17 @@ if __name__ == '__main__':
     print(splits[0])
 
     embeddings = VertexAIEmbeddings()
-    vector_chromadb = Chroma.from_documents(
-        documents=splits,
-        persist_directory=persist_directory,
-        embedding=embeddings)
+
+    if not os.listdir(persist_directory):
+        vector_chromadb = Chroma.from_documents(
+            documents=splits,
+            persist_directory=persist_directory,
+            embedding=embeddings)
+    else:
+        vector_chromadb = Chroma(
+            persist_directory=persist_directory,
+            embedding_function=embeddings
+        )
 
     print(vector_chromadb._collection.count())
 
@@ -83,7 +90,7 @@ if __name__ == '__main__':
                                            retriever=vector_chromadb.as_retriever(),
                                            return_source_documents=True,
                                            verbose=True,
-                                           chain_type_kwargs={"prompt": QA_CHAIN_PROMPT})
+                                           chain_type_kwargs={"prompt": QA_CHAIN_PROMPT, "verbose": True})
 
     result = qa_chain({"query": question})
     print(result["result"])
