@@ -1,23 +1,29 @@
 import os
+from typing import Any
+
+import umap
+import numpy as np
+from langchain_core.messages import SystemMessage, HumanMessage
+from numpy._typing import _64Bit
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from configs.app_configs import AppConfigs
 
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import NotionDirectoryLoader
 
-from langchain.text_splitter import MarkdownHeaderTextSplitter, SentenceTransformersTokenTextSplitter
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import (MarkdownHeaderTextSplitter,
+                                     SentenceTransformersTokenTextSplitter,
+                                     RecursiveCharacterTextSplitter)
 
-from langchain_google_vertexai import VertexAI
-from langchain_google_vertexai import VertexAIEmbeddings
+from langchain_google_vertexai import (VertexAI,
+                                       VertexAIEmbeddings)
 
-from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory
+from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.prompts import PromptTemplate
 
-import umap
-import numpy as np
-from tqdm import tqdm
 
 app_configs = AppConfigs()
 gcloud_credentials = app_configs.configs.GoogleApplicationCredentials.google_app_credentials_path
@@ -27,112 +33,142 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(
     gcloud_credentials.file_name
 )
 
-persist_directory = os.path.join(*app_configs.configs.ChromaConfigs.persist_directory)
-notion_directory = os.path.join(*app_configs.configs.NotionLocalDbConfigs.persist_directory)
 
-
-def project_embeddings(embeddings, umap_transform):
-    umap_embeddings = np.empty((len(embeddings), 2))
-    for i, embedding in enumerate(tqdm(embeddings)):
-        umap_embeddings[i] = umap_transform.transform([embedding])
+def project_embeddings(_embeddings: list[list[float]], _umap_transform: umap.UMAP) \
+        -> np.ndarray[Any, np.dtype[np.floating[_64Bit]]]:
+    umap_embeddings = np.empty((len(_embeddings), 2))
+    for i, _emb in enumerate(tqdm(_embeddings)):
+        umap_embeddings[i] = _umap_transform.transform([_emb])
     return umap_embeddings
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-
-    loader = NotionDirectoryLoader(notion_directory)
-    docs = loader.load()
-
-    headers_to_split_on = [
-        ("#", "Header 1"),
-        ("##", "Header 2"),
-        ("###", "Header 3"),
+def augment_query_generated(query: str, model: str = "gemini-pro") -> str:
+    messages = [
+        SystemMessage(content=(
+            "You are a helpful expert assistant for newly recruited data and software engineers. ",
+            "Your main role is to guide newly hired engineers throw a entry study program. "
+            "Provide an example answer to the given question, that might be found in "
+            "a document that contains useful resources that the employee have to study, "
+            "such as a document with a list of topics or a document with some useful links.")
+        ),
+        HumanMessage(content=query)
     ]
+    _llm = VertexAI(model_name=model)
+    return _llm.invoke(messages)
 
-    markdown_splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=headers_to_split_on,
-        strip_headers=False
-    )
 
-    md_header_splits = []
-    for doc in docs:
-        md_header_splits += (markdown_splitter.split_text(doc.page_content))
+if __name__ == '__main__':
+    chroma_persist_directory = os.path.join(*app_configs.configs.ChromaConfigs.persist_directory)
+    notion_persist_directory = os.path.join(*app_configs.configs.NotionLocalDbConfigs.persist_directory)
+    vertex_embeddings_model = VertexAIEmbeddings(model_name="textembedding-gecko@001")
 
-    chunk_size, chunk_overlap = 600, 30
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        # separators=["\n\n", "\n", "(?<=\. )", " ", ""]
-    )
+    if not os.listdir(chroma_persist_directory):
+        loader = NotionDirectoryLoader(notion_persist_directory)
+        docs = loader.load()
 
-    # Split
-    text_splits = text_splitter.split_documents(md_header_splits)
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")],
+            strip_headers=False
+        )
+        md_header_splits = []
+        for doc in docs:
+            md_header_splits += (markdown_splitter.split_text(doc.page_content))
 
-    tokens_per_chunk = 200
-    token_splitter = SentenceTransformersTokenTextSplitter(
-        chunk_overlap=chunk_overlap,
-        tokens_per_chunk=tokens_per_chunk)
-    token_split_texts = token_splitter.split_documents(text_splits)
+        text_splitter = RecursiveCharacterTextSplitter(  # separators=["\n\n", "\n", "(?<=\. )", " ", ""]
+            chunk_size=600,
+            chunk_overlap=30
+        )
+        text_splits = text_splitter.split_documents(md_header_splits)
 
-    vertex_embeddings = VertexAIEmbeddings(model_name="textembedding-gecko@001")
+        token_splitter = SentenceTransformersTokenTextSplitter(
+            tokens_per_chunk=200,
+            chunk_overlap=30
+        )
+        token_split_texts = token_splitter.split_documents(text_splits)
 
-    if not os.listdir(persist_directory):
         vector_chromadb = Chroma.from_documents(
             documents=token_split_texts,
-            persist_directory=persist_directory,
-            embedding=vertex_embeddings)
+            persist_directory=chroma_persist_directory,
+            embedding=vertex_embeddings_model)
     else:
-
         vector_chromadb = Chroma(
-            persist_directory=persist_directory,
-            embedding_function=vertex_embeddings
+            persist_directory=chroma_persist_directory,
+            embedding_function=vertex_embeddings_model
         )
 
-    query = "List 3 easy code challenges about Array."
-    retrieved_documents = vector_chromadb.similarity_search(query=query, k=5)
+    # # TEST 1
+    # query1 = "List 3 easy code challenges about Array."
+    # retrieved_documents1 = vector_chromadb.similarity_search(query=query1, k=5)
+    #
+    # for document in retrieved_documents1:
+    #     print(document.page_content)
+    #     print('\n')
+    #
+    retrieved_embeddings1 = vector_chromadb.get(include=['embeddings'])['embeddings']
+    umap_transform = umap.UMAP(random_state=0, transform_seed=0).fit(retrieved_embeddings1)
+    projected_dataset_embeddings = project_embeddings(retrieved_embeddings1, umap_transform)
+    #
+    # plt.figure()
+    # plt.scatter(projected_dataset_embeddings[:, 0], projected_dataset_embeddings[:, 1], s=10)
+    # plt.gca().set_aspect('equal', 'datalim')
+    # plt.title('Projected Embeddings')
+    # plt.axis('off')
+    # plt.show()
+    #
+    # # TEST 2
+    # query2 = "List 3 easy code challenges about Array."
+    # retrieved_documents2 = vector_chromadb.similarity_search(query=query2, k=5)
+    # docs2 = []
+    # for doc in retrieved_documents2:
+    #     docs2.append(doc.page_content)
+    #
+    # query2_embedding = vertex_embeddings_model.embed_query(query2)
+    # retrieved_docs2_embeddings = vertex_embeddings_model.embed_documents(docs2)
+    #
+    # projected_query_embedding = project_embeddings([query2_embedding])
+    # projected_retrieved_embeddings = project_embeddings(retrieved_docs2_embeddings)
+    #
+    # plt.figure()
+    # plt.scatter(projected_dataset_embeddings[:, 0], projected_dataset_embeddings[:, 1], s=10, color='gray')
+    # plt.scatter(projected_query_embedding[:, 0], projected_query_embedding[:, 1], s=150, marker='X', color='r')
+    # plt.scatter(projected_retrieved_embeddings[:, 0], projected_retrieved_embeddings[:, 1], s=100, facecolors='none', edgecolors='g')
+    # plt.gca().set_aspect('equal', 'datalim')
+    # plt.title(f'{query2}')
+    # plt.axis('off')
+    # plt.show()
 
-    for document in retrieved_documents:
-        print(document.page_content)
-        print('\n')
+    # TEST 3 - Expansion with generated answers
+    original_query = "Give me some materials about a topic i need to study."
+    hypothetical_answer = augment_query_generated(original_query)
+    joint_query = f"{original_query} {hypothetical_answer}"
+    # print(joint_query)
 
-    embeddings = vector_chromadb._collection.get(include=['embeddings'])['embeddings']
-    umap_transform = umap.UMAP(random_state=0, transform_seed=0).fit(embeddings)
-    projected_dataset_embeddings = project_embeddings(embeddings, umap_transform)
+    retrieved_documents3 = vector_chromadb.similarity_search(query=joint_query, k=5)
 
-    import matplotlib.pyplot as plt
+    docs3 = []
+    for doc in retrieved_documents3:
+        docs3.append(doc.page_content)
 
-    plt.figure()
-    plt.scatter(projected_dataset_embeddings[:, 0], projected_dataset_embeddings[:, 1], s=10)
-    plt.gca().set_aspect('equal', 'datalim')
-    plt.title('Projected Embeddings')
-    plt.axis('off')
-    plt.show()
+    retrieved_docs3_embeddings = vertex_embeddings_model.embed_documents(docs3)
+    original_query_embedding = vertex_embeddings_model.embed_query(original_query)
+    augmented_query_embedding = vertex_embeddings_model.embed_query(joint_query)
 
-    query = "List 3 easy code challenges about Array."
-    # results = vector_chromadb._collection.query(query_texts=query, n_results=5, include=['documents', 'embeddings'])
-    # retrieved_documents = results['documents'][0]
-    query_embedding = vertex_embeddings.embed_query(query)
-    results = vector_chromadb.similarity_search(query=query, k=5)
-    texts = []
-    for res in results:
-        texts.append(res.page_content)
-    retrieved_embeddings = vertex_embeddings.embed_documents(texts)
+    projected_original_query_embedding = project_embeddings([original_query_embedding], umap_transform)
+    projected_augmented_query_embedding = project_embeddings([augmented_query_embedding], umap_transform)
+    projected_retrieved_embeddings = project_embeddings(retrieved_docs3_embeddings, umap_transform)
 
-    projected_query_embedding = project_embeddings([query_embedding], umap_transform)
-    projected_retrieved_embeddings = project_embeddings(retrieved_embeddings, umap_transform)
-
-    # Plot the projected query and retrieved documents in the embedding space
     plt.figure()
     plt.scatter(projected_dataset_embeddings[:, 0], projected_dataset_embeddings[:, 1], s=10, color='gray')
-    plt.scatter(projected_query_embedding[:, 0], projected_query_embedding[:, 1], s=150, marker='X', color='r')
     plt.scatter(projected_retrieved_embeddings[:, 0], projected_retrieved_embeddings[:, 1], s=100, facecolors='none', edgecolors='g')
+    plt.scatter(projected_original_query_embedding[:, 0], projected_original_query_embedding[:, 1], s=150, marker='X', color='r')
+    plt.scatter(projected_augmented_query_embedding[:, 0], projected_augmented_query_embedding[:, 1], s=150, marker='X', color='orange')
 
     plt.gca().set_aspect('equal', 'datalim')
-    plt.title(f'{query}')
+    plt.title(f'{original_query}')
     plt.axis('off')
     plt.show()
-    # print(vector_chromadb._collection.count())
+
+
 
     # query it
     # query = "List 3 easy code challenges about Array."
