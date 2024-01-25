@@ -4,6 +4,7 @@ from typing import Any, List
 import umap
 import numpy as np
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.documents import Document
 from numpy._typing import _64Bit
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -56,6 +57,21 @@ def augment_query_generated(query: str, model: str = "gemini-pro") -> str:
     ]
     _llm = VertexAI(model_name=model)
     return _llm.invoke(messages)
+
+
+def get_sources(_sources: List[Document]) -> str:
+    all_metadata = [source.metadata for source in _sources]
+    all_sources = [m['source'] for m in all_metadata]
+    if all_sources:
+        found_sources = set()
+        for source in all_sources:
+            source_name = source.strip()
+            found_sources.add(source_name)
+
+        if found_sources:
+            return f"\nSources: {', '.join(found_sources)}"
+
+    return "\nNo sources found"
 
 
 if __name__ == '__main__':
@@ -208,9 +224,6 @@ if __name__ == '__main__':
 
     condense_question_prompt = PromptTemplate.from_template(template=condense_question_template)
 
-    # """
-    # If you find some external links or resources in the context, just DO NOT USE THEM and ask to the user if you need
-    # to access these resources."""
     combine_docs_template = """
     Use the following pieces of context to answer the question at the end.
     Avoid to use any link or external resource if not explicitly said by the user.
@@ -244,6 +257,7 @@ if __name__ == '__main__':
         template=combine_docs_template
     )
 
+    debug_flag = False
     qa = ConversationalRetrievalChain.from_llm(
         llm,
         retriever=vector_chromadb.as_retriever(search_type="similarity", search_kwargs={"k": 5}),  # mmr
@@ -253,37 +267,36 @@ if __name__ == '__main__':
         # return_generated_question=True,
         chain_type="stuff",
         combine_docs_chain_kwargs={"prompt": combine_docs_prompt},
-        verbose=True
+        verbose=debug_flag
     )
 
-    question = "List 10 title of easy code challenges involving matrices."
-    # gen_answer = augment_query_generated(question)
-    # joint_question = (f"{question}"
-    #                   f"\n\nUse the following hypothetical answer as "
-    #                   f"an example for generating your actual answer: {gen_answer}")
-    result = qa({"question": question})
-    sources = result["source_documents"]
-    answer = result['answer']
-
-    all_metadata = [source.metadata for source in sources]
-    all_sources = [m['source'] for m in all_metadata]
-    if all_sources:
-        found_sources = set()
-        for source in all_sources:
-            source_name = source.strip()
-            found_sources.add(source_name)
-
-        if found_sources:
-            answer += f"\nSources: {', '.join(found_sources)}"
+    want_to_chat = True
+    while want_to_chat:
+        user_input = input("You: ")
+        if user_input.lower() != "quit":
+            question = user_input
+            result = qa({"question": question})
+            sources = result["source_documents"]
+            answer = result['answer'] + get_sources(sources)
+            print(f"Chatbot: {answer}")
         else:
-            answer += "\nNo sources found"
+            want_to_chat = False
 
-        print(answer)
-
-
-    question1 = "Can you give me the titles of just 3 easy code challenges about arrays?"
-    result1 = qa({"question": question1})
-    print(result1['answer'])
+    #     question = "List 10 title of easy code challenges involving matrices."
+    #     # gen_answer = augment_query_generated(question)
+    #     # joint_question = (f"{question}"
+    #     #                   f"\n\nUse the following hypothetical answer as "
+    #     #                   f"an example for generating your actual answer: {gen_answer}")
+    #     result = qa({"question": question})
+    #     sources = result["source_documents"]
+    #     answer = result['answer']
+    #     answer += get_sources(sources=sources)
+    #     print(answer)
+    #
+    #
+    # question1 = "Can you give me the titles of just 3 easy code challenges about arrays?"
+    # result1 = qa({"question": question1})
+    # print(result1['answer'])
     # question2 = "What was the first option that you selected?"
     # result2 = qa({"question": question2})
     # print(result2['answer'])
